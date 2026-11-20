@@ -4,6 +4,8 @@ from fastapi import HTTPException
 from sqlalchemy import select
 from .models import Estimate,Mould
 from .execution_models import TrialExecution,CostReview
+from .project_models import BudgetHold
+from .project_service import settle_budget
 from .services import item,serialize,record
 from .workshop_service import trial_ready,material_cost,freeze_material_cost
 from .workshop_models import ReviewMaterialLedger
@@ -17,6 +19,7 @@ def view(s,x):
     else:
         e=item(s,TrialExecution,x.execution_id);d['estimate_code']=e.snapshot['estimate_code'];d['requires_explanation']=abs(x.variance_pct)>20 or x.margin<0
         ledger=s.scalar(select(ReviewMaterialLedger).where(ReviewMaterialLedger.review_id==x.id));d['material_ledger']=serialize(ledger) if ledger else None
+        hold=s.scalar(select(BudgetHold).where(BudgetHold.estimate_id==e.estimate_id));d['budget_hold']=serialize(hold) if hold else None
     return d
 def begin(s,data,u):
     e=s.query(Estimate).filter_by(id=data.estimate_id).with_for_update().one_or_none()
@@ -69,4 +72,5 @@ def sign(s,rid,u):
     for key,value in amounts(x,derived).items():setattr(r,key,value)
     freeze_material_cost(s,r)
     if (abs(r.variance_pct)>20 or r.margin<0)and len(r.reason.strip())<8:raise HTTPException(409,'工时偏差超过20%或负毛利，须填写至少8字的复核说明')
+    settle_budget(s,r,x)
     r.status='signed';r.signed_by=u.email;x.status='settled';record(s,u,'主管签结 '+x.snapshot['estimate_code']);return r

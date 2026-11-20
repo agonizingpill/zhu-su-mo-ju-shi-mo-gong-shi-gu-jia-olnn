@@ -10,6 +10,7 @@
 - 试模估价：创建独立估单，配置费率、装夹准备工时、报价；Python worker 真算总机时。
 - 误差与工时解释：交叉特征、Ridge 标准化系数，128 条训练与 32 条留出验证，固定 seed 42；展示留出 MAE 和实际/预测散点。
 - 机时排程：估价员申请，负责人承诺。底价为预测总工时 × 费率 × 1.15。申请不预占；承诺时行锁核对容量、累加预留并锁单，防止重复承诺或超售。低价或余量不足均不改变已有预留。
+- 项目预算占款：估单挂入项目预算池（总额/在占/已核销）。承诺时用已签结算训练的成本上分位模型定价占款，同一事务内同时占机时与预算；项目行锁保证同项目并发下单不超支。签结按实际成本核销并退余款，超额须先补足差额；流水幂等，失败重试不重复扣款。未开工撤单同时退预算和机时，与开工行锁互斥，只有一方成功。页面可查占款依据、预算流水和每张估单签结卡在哪。
 
 - 试模实绩采集：仅已承诺估单开工，一单一份；开工保存预测机时、报价、费率和模具快照。完工时间推导实际机时，良品不得超过总射次；超时完工由负责人填写原因确认。
 - 工时偏差结算：已完工实绩计算实际成本、工时偏差与毛利；偏差绝对值超过20%或毛利为负时，签结前必须补足说明。负责人签结同步冻结实绩及结算草稿，拒绝重复签结。
@@ -33,7 +34,7 @@ docker compose exec -T backend python -m scripts.seed_demo
 |---|---|---|---|
 |admin@ruimo.demo|Mould2026!|admin|全部读写、开放机时、最终承诺、超时完工与结算签结、保养批准、树脂入库/隔离、客户交付关闭|
 |estimator@ruimo.demo|Mould2026!|estimator|录入模具、建立修订估价、估算、申请机时；常规开工完工、保养计划/完检、领退料、客户签收/验收记录、结算草稿；不能承诺或签结|
-|viewer@ruimo.demo|Mould2026!|viewer|只读九业务页面与审计|
+|viewer@ruimo.demo|Mould2026!|viewer|只读十业务页面与审计|
 
 JWT 8 小时过期，密码 PBKDF2-SHA256 盐化存储。演示账号只用于本地，部署前修改 JWT_SECRET 和数据库演示口令。
 
@@ -53,6 +54,8 @@ JWT 8 小时过期，密码 PBKDF2-SHA256 盐化存储。演示账号只用于�
 
 V3：09:00 MD-115计划11月25日08:00—12:00顶针润滑与滑块检查，主管批准，完检记回位/模面结果；任何新开工不能回填到该窗口。10:00 RS-P20-DEMO树脂单价20元/kg，为运行试模领30kg；完工退5kg，库存净减25kg、净耗500元，结算材料成本只读500元。11:00签结后交10件样件给华远质量部，记录签收与验收；若卡扣装配需整改，必须再建同模新估单、承诺、开工完工、净耗结算signed后才能绑定关闭。
 
+V4：09:20 打开「项目预算占款」，PRJ-HY 总额 60000 元。10:30 承诺 QE-26017：成本上分位模型按 36 条已签结算、5 套模具分组验证定价，同一事务占 15.14h 机时与约 5000 元预算，占款依据可展开。10:40 同项目并发承诺多张估单，预算池行锁串行，余量不足的申请被拒且不影响已占。次日完工签结：实际成本低于占款，按实际核销并退余款；若超时超支，签结提示补足差额，追加预算后重签，重试不重复扣款。未开工的已承诺估单可撤单，机时与占款同时退回；撤单与开工撞单只有一方成功。
+
 ## 算法口径与限制
 
 输入模腔数、滑块数、重量、钢材编码（P20=0、H13=1、S136=2）。PolynomialFeatures(degree=2, interaction_only=True) 生成原始项和交叉项，StandardScaler 按训练集拟合，Ridge(alpha=3) 回归实际试模工时，本单总预测工时另加准备工时。训练/验证分割固定 42，仅在训练集拟合模型和标准化器；MAE 是留出样本 mean(abs(actual-predicted))。样本少于30失败，预测基础工时下限0.5h。钢材是演示工艺序列编码，扩展无序材料时应改one-hot并重训。
@@ -60,6 +63,8 @@ V3：09:00 MD-115计划11月25日08:00—12:00顶针润滑与滑块检查，主�
 Redis worker结果持久化 Estimate.model_result，同时写 backend/worker 共享命名卷 `/artifacts/estimate-<id>.json`。worker 在取走作业后故障中断的自动重投尚未实现；生产化需可靠队列和恢复机制。时段是人工预算，未实现跨日物理日历或设备停机联动。小型项目没有删除、承诺撤销或财务对接。实际工时按开工/完工时间差计算，未填时区按上海解释，保存UTC。单次最长168h，材料成本由领退料台账计算，单价在领料时冻结；没有停机扣时、工资分摊和多次试模合并。完工实绩没有自动写入训练参考表，基准160条不被暗改。
 
 V3范围：保养时间和客户签收可按演示日期录入，无设备时钟联锁；同模具仅允许一份running实绩。每次试模对同树脂批次只领一次，不提供追加领料或多次退料；批次隔离后的退回库存仍保持隔离。客户样件数按good_shots上界，不另展开一射多腔件数。没有仓库外接、实际物流发送、客户门户或电子签章。
+
+V4范围：成本上分位模型用 GradientBoostingRegressor(loss='quantile', alpha=0.85, seed=42)，特征为模腔、滑块、重量、钢材编码、费率、预测机时，目标是已签结算实际成本；按模具 GroupKFold 分组交叉验证（整组留出防泄漏），证据（样本数、模具组数、覆盖率、分位损失）随占款保存。已签结算少于30条或覆盖模具少于4套时暂缓承诺。占款额=本单成本上分位预测，承诺与签结都在每次请求时重训，未做模型缓存或定时重训。预算池是额度上限不是资金账户：核销把在占转为已核销，退余与撤单释放在占；没有多币种、税率、分期或财务对接。预算调整只记流水不审批。机时预留在签结后不自动释放（时段是人工预算），撤单才退回。锁顺序统一为估单→项目→时段，并发冲突由行锁串行，未设锁超时与重试队列。
 
 ## 本地开发与结构
 
@@ -76,11 +81,13 @@ V3 `backend/src/workshop_models.py`定义MaintenanceWindow、ResinLot、TrialMat
 
 `backend/src/execution_models.py` 定义实绩/结算外键与唯一约束，`execution_schemas.py` 校验输入，`execution_service.py` 管理快照、工时与成本事务，`execution_routes.py` 暴露 `/executions`、`/cost-reviews` 及 finish/sign 操作。
 
-`frontend/src/pages/` 的 moulds/estimates/evidence/schedule/executions/reviews 及 maintenance/materials/deliveries 是九页；`api.js` HTTP；`store.js` 业务状态；`components/common.js` 状态标签/证据条/选择器跨页复用；`utils/format.js` 转义、金额/数字和表单工具。
+V4 `backend/src/project_models.py` 定义 Project/BudgetHold/BudgetLedger（流水 request_id 唯一，幂等兜底）；`cost_model.py` 是成本上分位模型与分组验证；`project_service.py` 负责承诺占款、撤单退回、签结核销与进度查询，`project_routes.py` 暴露 `/projects`、`/budget-holds` 及 ledger/pipeline 查询；`/estimates/{id}/cancel` 在 main.py。旧库启动时 `ALTER TABLE ... IF NOT EXISTS` 非破坏性增加 estimates.project_id。worker 产物目录可用 ARTIFACTS_DIR 覆盖（默认 /artifacts）。
+
+`frontend/src/pages/` 的 moulds/estimates/evidence/schedule/executions/reviews 及 maintenance/materials/deliveries/projects 是十页；`api.js` HTTP；`store.js` 业务状态；`components/common.js` 状态标签/证据条/选择器跨页复用；`utils/format.js` 转义、金额/数字和表单工具。
 
 本地 `pip install -r backend/requirements.txt`，设置 DATABASE_URL/REDIS_URL，在backend目录 `uvicorn src.main:app --reload`，另一终端 `python -m src.worker`。前端建议使用Compose Nginx代理。
 
-枚举位置：角色、估价状态、实绩状态、结算、保养、树脂、领料、交付状态与钢材定义在 `backend/src/constants.py` 和 `frontend/src/constants.js`；`GET /enums` 返回上述九组。钢材输入Literal在schemas.py、模型编码在ml.py。后端权限为真实约束，前端禁用按钮作提示。IntegrityError转成可恢复409。
+枚举位置：角色、估价状态、实绩状态、结算、保养、树脂、领料、交付状态、占款与流水类型与钢材定义在 `backend/src/constants.py` 和 `frontend/src/constants.js`；`GET /enums` 返回上述十一组。钢材输入Literal在schemas.py、模型编码在ml.py。后端权限为真实约束，前端禁用按钮作提示。IntegrityError转成可恢复409。
 
 环境变量见 `.env.example`：COMPOSE_PROJECT_NAME、FRONTEND_PORT、BACKEND_PORT、DB_PORT、JWT_SECRET、SEED_DEMO。`COMPOSE_SUBNET=10.221.23.0/24` 是本机默认地址池已满后的专用网段；冲突时改空闲网段。数据库、Redis、计算产物为命名卷。
 

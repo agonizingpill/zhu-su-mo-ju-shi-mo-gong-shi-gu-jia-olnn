@@ -1,5 +1,5 @@
 ROLES = ('admin', 'estimator', 'viewer')
-ESTIMATE_STATES = ('draft', 'calculating', 'estimated', 'requested', 'committed', 'failed')
+ESTIMATE_STATES = ('draft', 'calculating', 'estimated', 'requested', 'committed', 'cancelled', 'failed')
 STEELS = ('P20', 'H13', 'S136')
 
 EXECUTION_STATES = ('running', 'completed', 'settled')
@@ -9,3 +9,6 @@ MAINTENANCE_STATES=('planned','approved','completed')
 RESIN_STATES=('available','quarantine')
 MATERIAL_STATES=('issued','returned')
 DELIVERY_STATES=('dispatched','received','accepted','rectification','closed')
+
+HOLD_STATES=('active','settled','released')
+LEDGER_TYPES=('hold','topup','writeoff','refund','release','adjust')

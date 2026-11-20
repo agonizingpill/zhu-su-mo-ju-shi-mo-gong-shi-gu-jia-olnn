@@ -31,6 +31,7 @@ class Estimate(Base):
     id: Mapped[int]=mapped_column(primary_key=True)
     code: Mapped[str]=mapped_column(String(40),unique=True)
     mould_id: Mapped[int]=mapped_column(ForeignKey('moulds.id'))
+    project_id: Mapped[int|None]=mapped_column(ForeignKey('projects.id'),nullable=True)
     slot_id: Mapped[int|None]=mapped_column(ForeignKey('machine_slots.id'),nullable=True)
     rate: Mapped[float]=mapped_column(Float)
     setup_hours: Mapped[float]=mapped_column(Float)
@@ -53,3 +54,5 @@ class Audit(Base):
     actor: Mapped[str]=mapped_column(String(120))
     action: Mapped[str]=mapped_column(String(200))
     stamp: Mapped[str]=mapped_column(String(40))
+# Register budget tables on the same metadata so every entry point (api, worker, seed) resolves estimates.project_id.
+from .project_models import Project,BudgetHold,BudgetLedger  # noqa: E402,F401

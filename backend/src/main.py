@@ -4,19 +4,23 @@ import redis
 from fastapi import FastAPI,Depends,HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
-from sqlalchemy import select,func
+from sqlalchemy import select,func,text
 from sqlalchemy.exc import IntegrityError
 from .db import Base,engine,db_session
 from .models import User,Mould,Estimate,MachineSlot,TrialHistory,Audit
+from .project_models import Project
 from .auth import current,writers,admin,verify,token
 from .schemas import Login,MouldInput,EstimateInput,QuoteInput,SlotChoice,SlotInput
-from .services import item,serialize,record,require_edit,request_capacity,commit_capacity
+from .services import item,serialize,record,require_edit,request_capacity
+from .project_service import commit_with_budget,cancel_estimate
 from .middlewares import RequestTrace,BurstGuard
-from .constants import ROLES,ESTIMATE_STATES,STEELS,EXECUTION_STATES,REVIEW_STATES,MAINTENANCE_STATES,RESIN_STATES,MATERIAL_STATES,DELIVERY_STATES
+from .constants import ROLES,ESTIMATE_STATES,STEELS,EXECUTION_STATES,REVIEW_STATES,MAINTENANCE_STATES,RESIN_STATES,MATERIAL_STATES,DELIVERY_STATES,HOLD_STATES,LEDGER_TYPES
 r=redis.Redis.from_url(os.environ['REDIS_URL'],decode_responses=True)
 @asynccontextmanager
 async def lifespan(app):
     Base.metadata.create_all(engine)
+    with engine.begin() as c:  # Existing databases gain the budget link without losing data.
+        c.execute(text('ALTER TABLE estimates ADD COLUMN IF NOT EXISTS project_id INTEGER REFERENCES projects(id)'))
     if os.getenv('SEED_DEMO','true').lower()=='true':
         try:
             from scripts.seed_demo import seed
@@ -28,6 +32,8 @@ from .execution_routes import router as execution_router
 app.include_router(execution_router)
 from .workshop_routes import router as workshop_router
 app.include_router(workshop_router)
+from .project_routes import router as project_router
+app.include_router(project_router)
 app.add_middleware(RequestTrace);app.add_middleware(BurstGuard)
 app.add_middleware(CORSMiddleware,allow_origins=['http://localhost:18222'],allow_methods=['*'],allow_headers=['*'])
 @app.exception_handler(IntegrityError)
@@ -43,7 +49,7 @@ def login(p:Login,s=Depends(db_session)):
 @app.get('/me')
 def me(u=Depends(current)):return {'email':u.email,'role':u.role}
 @app.get('/enums')
-def enums(u=Depends(current)):return {'roles':ROLES,'estimate_states':ESTIMATE_STATES,'steels':STEELS,'execution_states':EXECUTION_STATES,'review_states':REVIEW_STATES,'maintenance_states':MAINTENANCE_STATES,'resin_states':RESIN_STATES,'material_states':MATERIAL_STATES,'delivery_states':DELIVERY_STATES}
+def enums(u=Depends(current)):return {'roles':ROLES,'estimate_states':ESTIMATE_STATES,'steels':STEELS,'execution_states':EXECUTION_STATES,'review_states':REVIEW_STATES,'maintenance_states':MAINTENANCE_STATES,'resin_states':RESIN_STATES,'material_states':MATERIAL_STATES,'delivery_states':DELIVERY_STATES,'hold_states':HOLD_STATES,'ledger_types':LEDGER_TYPES}
 @app.get('/moulds')
 def moulds(s=Depends(db_session),u=Depends(current)):return [serialize(x) for x in s.scalars(select(Mould).order_by(Mould.id))]
 @app.post('/moulds')
@@ -62,7 +68,9 @@ def edit_mould(mid:int,p:MouldInput,s=Depends(db_session),u=Depends(writers)):
 def estimates(s=Depends(db_session),u=Depends(current)):return [serialize(x) for x in s.scalars(select(Estimate).order_by(Estimate.id.desc()))]
 @app.post('/estimates')
 def add_estimate(p:EstimateInput,s=Depends(db_session),u=Depends(writers)):
-    item(s,Mould,p.mould_id);e=Estimate(**p.model_dump());s.add(e);record(s,u,'建立估价 '+p.code);s.commit();return serialize(e)
+    item(s,Mould,p.mould_id)
+    if p.project_id is not None:item(s,Project,p.project_id)
+    e=Estimate(**p.model_dump());s.add(e);record(s,u,'建立估价 '+p.code);s.commit();return serialize(e)
 @app.patch('/estimates/{eid}/quote')
 def quote(eid:int,p:QuoteInput,s=Depends(db_session),u=Depends(writers)):
     e=item(s,Estimate,eid);require_edit(e);e.quote_amount=p.quote_amount
@@ -82,7 +90,10 @@ def request(eid:int,p:SlotChoice,s=Depends(db_session),u=Depends(writers)):
     e=item(s,Estimate,eid);request_capacity(s,e,p.slot_id);record(s,u,'申请机时 '+e.code);s.commit();return serialize(e)
 @app.post('/estimates/{eid}/commit')
 def commit(eid:int,s=Depends(db_session),u=Depends(admin)):
-    e=commit_capacity(s,eid);record(s,u,'承诺排程 '+e.code);s.commit();return serialize(e)
+    e,hold=commit_with_budget(s,eid);record(s,u,'承诺排程 '+e.code);s.commit();return serialize(e)
+@app.post('/estimates/{eid}/cancel')
+def cancel(eid:int,s=Depends(db_session),u=Depends(admin)):
+    e=cancel_estimate(s,eid);record(s,u,'未开工撤单 '+e.code);s.commit();return serialize(e)
 @app.get('/slots')
 def slots(s=Depends(db_session),u=Depends(current)):return [serialize(x) for x in s.scalars(select(MachineSlot).order_by(MachineSlot.id))]
 @app.post('/slots')
